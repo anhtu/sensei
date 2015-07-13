@@ -44,7 +44,6 @@ def extract_comment(s):
 def main():                          
 	start = time.time()
 	
-
 	usage = "usage: %prog [options]"
 
 	parser = OptionParser(usage=usage)
@@ -80,17 +79,10 @@ def main():
 	print "elapsed: {}s \n".format( int( round( time.time() - start )))
 
 def count_marks(s):
-	dot_matched = re.findall(r'\.{3,}', s)
+	dot_matched = re.findall(r'([a-zA-Z_0-9])(\.{3,5})', s)
 	if len(dot_matched) > 0:
 		for match in dot_matched:
-			s = s.replace(match, ' ')
-
-	#s = s[:-1].replace(' .', ' . ').replace('. ', ' . ').replace(' !', ' ! ').replace('! ', ' ! ').replace(' ?', ' ? ').replace('? ', ' ? ')
-	#if len(s) == 0:
-	#	return 0
-
-	#return s.count('.&amp;') + s.count(' . ') + s.count(' ! ') + s.count(' ? ') + (s[0] in ['!', '.', '?'])
-	
+			s = s.replace(match[1], ' ')
 	s = s[:-1]
 	return s.count('.') + s.count('!') + s.count('?')
 
@@ -110,8 +102,6 @@ def process_file(input_file, input_dir, output_dir, classpath, memory = '4'):
 	infile.marks    = infile.sentence.map(lambda s: count_marks(s) )
 
 	### match the comments
-	# infile.sentence = infile.sentence.map(lambda s: re.match(r'^(\[.*\])*(.*)', s).group(2) )
-	# merge three dots into one 
 	infile.sentence = infile.sentence.map(lambda s: extract_comment(s))
 
 	# corenlp_cmd = 'java -cp "/Users/tubi/Documents/courses/sensei/stanford-corenlp-full-2015-04-20/*" -mx2g edu.stanford.nlp.sentiment.SentimentPipeline -stdin'
@@ -124,70 +114,40 @@ def process_file(input_file, input_dir, output_dir, classpath, memory = '4'):
 
 	infile['outcome'] = ''
 	multiple_re_seq = re.compile(r'( +( Very negative| Negative| Neutral| Positive| Very positive)\r*\n*)+', re.MULTILINE)   # match multiple emotions each on a line
-	single_re_seq   = re.compile(r'  +(Very negative|Negative|Neutral|Positive|Very positive)') #  - match only single line
+	# single_re_seq   = re.compile(r'  +(Very negative|Negative|Neutral|Positive|Very positive)') #  - match only single line
 
 	for idx, s in enumerate(infile.sentence.values):
 		print idx, s
-		corenlp.sendline(s)
 		print 'marks ', infile.marks[idx]
-		try:
-			#if infile.marks[idx] > 1:
-			#	print "long sentence"
-			#	corenlp.kill(0)
-			#	corenlp = pexpect.spawn(corenlp_cmd)
-			#	corenlp.expect('Processing will end when EOF is reached.')
-			#	corenlp.sendline(s)
-			#	time.sleep(4)
-			corenlp.expect(single_re_seq, timeout=20)
-			out = corenlp.after
-			print out.strip()
-			if infile.marks[idx] > 0:
-				time.sleep(.5)
-				corenlp.expect([multiple_re_seq, pexpect.TIMEOUT], timeout=2)
-				out1 = corenlp.after
-				if out1 == pexpect.TIMEOUT:
-					sentiments = out
-					print 'sentiment: ', sentiments
-					infile.loc[idx, 'outcome'] = sentiments
-					print 
-					continue
+		
+		if (infile.marks[idx] > 0) or (len(s) > 500):
+			p = Popen(corenlp_cmd, stdout=PIPE, stdin=PIPE, stderr=PIPE, shell=True)
+			p.stdin.write(s)
+			p.stdin.close()
+			out = p.stdout.read().strip()
+			sentiments = ' '.join([s_.strip() for s_ in out.split('\n')]) 
+			print 'sentiment: ', sentiments
+			infile.loc[idx, 'outcome'] = sentiments
+			print
+			continue	
+		
+		corenlp.sendline(s)
+		corenlp.expect([single_re_seq, pexpect.TIMEOUT], timeout=20)		
+		if corenlp.after == pexpect.TIMEOUT:
+			if len(s) > 1000:
+				print '==== This sentence is too lonng, please consider freeing up RAM and run again ==='
+			else:
+				print 'Error processing - please run again'
 
-				print out1
-				out  = out.strip() + ' ' + ' '.join([s_.strip() for s_ in out1.split('\r\n')]) 
-				print out
-				# sync		
-				corenlp.sendline('.')
-				corenlp.expect('Neutral', timeout=5)
-				if corenlp.after == 'Neutral':
-					print 'sync OK'
-			
-		except pexpect.TIMEOUT:
-			print 'timeout - restart the process'
 			corenlp.kill(0)  # kills the subprocess and create a new one
 			corenlp = pexpect.spawn(corenlp_cmd)
 			corenlp.expect('Processing will end when EOF is reached.')
-			corenlp.sendline(s)
-			corenlp.expect([multiple_re_seq, pexpect.TIMEOUT], timeout=20)
-			if corenlp.after == pexpect.TIMEOUT:
-				if len(s) > 1000:
-					print '==== This sentence is too lonng, please consider freeing up RAM and run again ==='
-					corenlp.kill(0)  # kills the subprocess and create a new one
-					corenlp = pexpect.spawn(corenlp_cmd)
-					corenlp.expect('Processing will end when EOF is reached.')
-				else:
-					print 'Error processing - please run again'
-				out = ' '
-			else:
-				out = corenlp.after
 
-			print 'sentiment: ', ' '.join([s_.strip() for s_ in out.split('\r\n')]) 
-			infile.loc[idx, 'outcome'] = sentiments
-			print
-			continue
+			out = ' '
+		else:
+			out = corenlp.after
 
-		# out = corenlp.after
-		sentiments = out
-		# sentiments = ' '.join([s_.strip() for s_ in out.split('\r\n')]) 
+		sentiments = ' '.join([s_.strip() for s_ in out.split('\r\n')]) 
 		print 'sentiment: ', sentiments
 		infile.loc[idx, 'outcome'] = sentiments
 		print 
@@ -202,12 +162,9 @@ def process_file(input_file, input_dir, output_dir, classpath, memory = '4'):
 	infile.to_csv(output_dir + '/' + input_file + '.csv', index=False, header=False)	
 	
 	
-	
 if __name__ == "__main__":
     main()
 	
-# Multiple emotions: s68 s85 s95 - all single sentence
-# s141
 
 
 
